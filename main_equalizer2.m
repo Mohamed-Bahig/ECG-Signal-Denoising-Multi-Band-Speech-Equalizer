@@ -1,5 +1,3 @@
-% =========================================================================
-
 clear; clc; close all;
 
 %% 1. AUDIO INPUT AND PREPROCESSING
@@ -23,7 +21,9 @@ catch
     x = randn(size(t))*0.1 + sin(2*pi*500*t)*0.5 + sin(2*pi*3000*t)*0.2;
 end
 
-% Convert stereo to mono if needed (Equalizers usually process mono or L/R separately)
+% Convert stereo to mono
+% WHY: Most multi-band equalizers process a single stream to save memory 
+% and processing power. If stereo is needed, we would duplicate this entire pipeline.
 if size(x, 2) > 1
     x = mean(x, 2);
     disp('Stereo audio detected: Converted to Mono to simplify processing.');
@@ -43,7 +43,7 @@ disp('2. Custom Mode (5 to 10 user-defined bands)');
 mode_sel = input('Enter mode (1 or 2) [default 1]: ');
 if isempty(mode_sel), mode_sel = 1; end
 
-Nyquist = Fs / 2; % The highest frequency we can represent
+Nyquist = Fs / 2; % The highest frequency we can represent without aliasing
 
 if mode_sel == 1
     % Preset Bands - strictly aligned with assignment requirements
@@ -81,13 +81,11 @@ else
     end
 end
 
-% FIX: Safely limit frequency bands to Nyquist to prevent filter design crashes
+% Safely limit frequency bands to Nyquist to prevent filter design crashes
 for i = 1:num_bands
-    % Prevent upper edge from exceeding Nyquist frequency limit
     if bands(i, 2) >= Nyquist
         bands(i, 2) = Nyquist - 1; 
     end
-    % Prevent lower edge from being equal/higher than upper edge
     if bands(i, 1) >= bands(i, 2)
         bands(i, 1) = max(0, bands(i, 2) - 100); 
     end
@@ -130,7 +128,9 @@ else
 end
 
 %% 4. GAIN INPUT SETUP
-% Gain is requested in Decibels (dB) because human hearing perceives loudness logarithmically.
+% WHY CONVERT dB TO LINEAR?
+% dB is logarithmic, mirroring human hearing. However, digital signals in 
+% code require linear amplitude multipliers. We must convert dB back to linear.
 disp(' ');
 disp('Enter gains for each band in dB:');
 gains_dB = zeros(num_bands, 1);
@@ -144,13 +144,13 @@ end
 %% 5. SIGNAL PROCESSING & FILTER DESIGN
 disp(' ');
 disp('Processing Signal... Please wait.');
-y = zeros(size(x)); % Pre-allocate output array
+y = zeros(size(x)); % Pre-allocate output array for speed and memory efficiency
 
 for i = 1:num_bands
     f_low = bands(i, 1);
     f_high = bands(i, 2);
     
-    % Normalize frequencies relative to Nyquist (MATLAB requirement: 0 to 1.0)
+    % Normalize frequencies relative to Nyquist
     Wn = [f_low, f_high] / Nyquist;
     
     % Determine exact filter band type based on edges
@@ -165,14 +165,12 @@ for i = 1:num_bands
         W_pass = Wn;
     end
     
-    % Design the filter coefficients (b: numerator, a: denominator)
+    % Design the filter coefficients (b: numerator/zeros, a: denominator/poles)
     if filt_type == 1
-        % FIR uses convolution (a=1)
         b = fir1(filt_order, W_pass, btype, win_func(filt_order+1));
-        a = 1; 
+        a = 1; % FIR has no poles (except at origin), so denominator is 1
         type_desc = sprintf('FIR (%s)', win_name);
     else
-        % IIR uses feedback loops
         if iir_type == 1
             [b, a] = butter(filt_order, W_pass, btype);
         elseif iir_type == 2
@@ -183,24 +181,24 @@ for i = 1:num_bands
         type_desc = sprintf('IIR (%s)', iir_name);
     end
     
-    % Generate filter analysis plots for each band
+    % Generate filter analysis plots for each band (Explicitly separated plots)
     plot_filter_analysis(b, a, Fs, i, bands(i,:), filt_order, type_desc);
     
     % Apply the filter to the signal
     x_filtered = filter(b, a, x);
     
-    % WHY GAINS ARE CONVERTED TO LINEAR:
-    % dB is logarithmic. To multiply signal amplitude, we must convert back to linear scale.
+    % Convert dB to linear scale and multiply amplitude
     gain_linear = 10^(gains_dB(i) / 20);
     x_filtered = x_filtered * gain_linear;
     
-    % Combine all processed bands in the time domain by simple addition
+    % Combine all processed bands in the time domain
     y = y + x_filtered;
 end
 
 %% 6. OUTPUT RESAMPLING & NORMALIZATION
-% FIX: Resampling applied according to user input.
-% Why Resampling? Demonstrates decimation/interpolation capabilities of DSP.
+% WHY RESAMPLING?
+% Demonstrates decimation (downsampling) or interpolation (upsampling). Useful 
+% when passing audio to systems operating at different clock rates.
 if output_fs ~= Fs
     disp(sprintf('Resampling from %d Hz to %d Hz...', Fs, output_fs));
     y = resample(y, output_fs, Fs);
@@ -209,9 +207,9 @@ else
     y_time = (0:length(y)-1)'/Fs;
 end
 
-% WHY NORMALIZATION IS REQUIRED:
-% If positive gains were applied, the combined output might exceed the [-1, 1] 
-% digital limit, causing nasty digital clipping/distortion. Normalizing scales it down.
+% WHY NORMALIZATION?
+% Positive gains can push amplitude above 1.0 or below -1.0. This exceeds 
+% the DAC limit, causing hard digital clipping. Normalizing to 0.99 prevents this.
 y = 0.99 * y / max(abs(y));
 
 %% 7. SYSTEM ANALYSIS: TIME, FREQ, PSD, AND SPECTROGRAM
@@ -231,8 +229,8 @@ plot(y_time, y, 'r');
 title('Processed Signal (Time)'); xlabel('Time (s)'); ylabel('Amplitude'); grid on;
 
 % --- 7.2 Frequency Domain Comparison (FFT) ---
-% WHY FFT IS PLOTTED: Shows the raw magnitude of all frequency bins. 
-% We restrict the X-axis to Fs/2 because the second half of the FFT is just mirrored.
+% WHY FFT: Shows the raw frequency bin magnitudes. Gives a quick mathematical 
+% snapshot of which frequencies are physically present in the array.
 N_fft_x = length(x);
 f_vec_x = (0:N_fft_x-1)*(Fs/N_fft_x);
 X_mag = abs(fft(x));
@@ -244,7 +242,7 @@ Y_mag = abs(fft(y));
 subplot(2,2,3);
 plot(f_vec_x(1:floor(N_fft_x/2)), X_mag(1:floor(N_fft_x/2)), 'b'); 
 title('Original Spectrum (FFT)'); xlabel('Frequency (Hz)'); ylabel('Magnitude'); grid on;
-xlim([0, min(Fs, output_fs)/2]); % Set proper limits
+xlim([0, min(Fs, output_fs)/2]);
 
 subplot(2,2,4);
 plot(f_vec_y(1:floor(N_fft_y/2)), Y_mag(1:floor(N_fft_y/2)), 'r'); 
@@ -252,8 +250,8 @@ title('Processed Spectrum (FFT)'); xlabel('Frequency (Hz)'); ylabel('Magnitude')
 xlim([0, min(Fs, output_fs)/2]);
 
 % --- 7.3 Power Spectral Density (Welch) ---
-% WHY PSD IS USEFUL: FFT is too noisy/spiky. Welch's method averages overlapping 
-% segments, giving a much smoother and more accurate representation of power over frequency.
+% WHY PSD: The FFT is often too noisy. Welch's method averages overlapping 
+% windowed segments, providing a much cleaner, smoothed curve of power distribution.
 figure('Name', 'Power Spectral Density (PSD)', 'NumberTitle', 'off');
 [Pxx_in, F_in] = pwelch(x, hamming(1024), 512, 1024, Fs);
 [Pxx_out, F_out] = pwelch(y, hamming(1024), 512, 1024, output_fs);
@@ -264,8 +262,8 @@ title('PSD Comparison (Welch Method)'); xlabel('Frequency (Hz)'); ylabel('Power/
 grid on; hold off;
 
 % --- 7.4 Spectrogram Comparison ---
-% WHY SPECTROGRAM IS USEFUL: It shows HOW frequency content changes over time.
-% You can visibly see when certain formants (speech frequencies) occur.
+% WHY SPECTROGRAM: Shows time and frequency simultaneously. We can visually 
+% identify formants (speech structure) or transient noises (clicks/hisses).
 figure('Name', 'Spectrogram Analysis', 'NumberTitle', 'off');
 sgtitle('Time-Frequency Analysis (Spectrogram)');
 subplot(2,1,1);
@@ -276,16 +274,20 @@ subplot(2,1,2);
 spectrogram(y, 1024, 512, 1024, output_fs, 'yaxis');
 title('Processed Signal Spectrogram');
 
-%% 8. LISTENING EVALUATION PRINT-OUT
+%% 8. LISTENING EVALUATION AND TRADE-OFFS
 disp(' ');
 disp('==================================================');
 disp('            LISTENING EVALUATION RESULTS          ');
 disp('==================================================');
-fprintf('Summary of Trade-Offs and Enhancements:\n');
-fprintf('- Speech Clarity: Mid/High frequencies (1kHz-5kHz) gains impact the vocal presence.\n');
-fprintf('- Noise Reduction: Low frequency drops (<100Hz) mitigate bass rumble/DC offset.\n');
-fprintf('- Trade-Offs: Higher FIR order guarantees strictly linear phase but adds computational delay.\n');
-fprintf('- Distortion: Non-linear IIR phase might smear sharp transients (like consonants). Normalization prevented clipping.\n');
+fprintf('Summary of Effects, Artifacts, and Trade-Offs:\n');
+fprintf('1. Speech Clarity: Boosting 2kHz-5kHz significantly improves vocal intelligibility.\n');
+fprintf('2. Noise Reduction: Attenuating <100Hz effectively reduces structural rumble or DC bias.\n');
+fprintf('3. FIR vs IIR Complexity: FIR requires larger memory buffers/computation (high order),\n');
+fprintf('   while IIR is highly efficient but risks system instability if poles move outside the unit circle.\n');
+fprintf('4. Phase Distortion (Artifacts): IIR filters introduce non-linear phase shift, which can \n');
+fprintf('   smear sharp transients (like hard consonants). FIR preserves phase alignment.\n');
+fprintf('5. Clipping Risks: Aggressive positive gains risk clipping, which we mitigated \n');
+fprintf('   by normalizing the final summed array to a ceiling of 0.99.\n');
 disp('==================================================');
 
 %% 9. PLAYBACK AND SAVING OPTIONS
@@ -327,32 +329,50 @@ disp('Processing Complete! Ready for Submission.');
 disp('==================================================');
 
 %% ========================================================================
-% HELPER FUNCTION: Plot Filter Analysis
+% HELPER FUNCTION: Plot Detailed Filter Analysis
 % =========================================================================
 function plot_filter_analysis(b, a, Fs, band_idx, band_freqs, order, type_desc)
     fig_name = sprintf('Band %d Analysis (%.0f Hz - %.0f Hz)', band_idx, band_freqs(1), band_freqs(2));
     figure('Name', fig_name, 'NumberTitle', 'off');
     sgtitle(sprintf('Band %d | %s | Order: %d | Range: %.0f-%.0f Hz', band_idx, type_desc, order, band_freqs(1), band_freqs(2)));
     
-    % 1. Magnitude and Phase Response
-    subplot(2,2,1);
-    freqz(b, a, 1024, Fs);
-    title('Magnitude & Phase Response'); grid on;
+    % Get frequency response data explicitly to separate magnitude and phase
+    [h, f_freqz] = freqz(b, a, 1024, Fs);
+    mag_dB = 20*log10(abs(h));
+    phase_rad = unwrap(angle(h));
     
-    % 2. Impulse Response
-    subplot(2,2,2);
+    % 1. Explicit Magnitude Response Plot
+    subplot(2,3,1);
+    plot(f_freqz, mag_dB, 'b', 'LineWidth', 1.5);
+    title('Magnitude Response'); 
+    xlabel('Frequency (Hz)'); ylabel('Magnitude (dB)'); 
+    grid on;
+    
+    % 2. Explicit Phase Response Plot
+    subplot(2,3,2);
+    plot(f_freqz, phase_rad, 'r', 'LineWidth', 1.5);
+    title('Phase Response'); 
+    xlabel('Frequency (Hz)'); ylabel('Phase (radians)'); 
+    grid on;
+    
+    % 3. Impulse Response Plot
+    subplot(2,3,3);
     impz(b, a, 50, Fs);
-    title('Impulse Response'); grid on;
+    title('Impulse Response'); 
+    grid on;
     
-    % 3. FIX: Manual Step Response for max version compatibility
-    subplot(2,2,3);
+    % 4. Step Response Plot (Using manual filter to guarantee MATLAB version compatibility)
+    subplot(2,3,4);
     step_input = ones(50, 1);
     step_resp = filter(b, a, step_input);
-    stem(0:49, step_resp, 'filled');
-    title('Step Response (Manual Method)'); xlabel('Samples'); ylabel('Amplitude'); grid on;
+    stem(0:49, step_resp, 'filled', 'MarkerFaceColor', 'k');
+    title('Step Response (Calculated)'); 
+    xlabel('Samples'); ylabel('Amplitude'); 
+    grid on;
     
-    % 4. Pole-Zero Plot
-    subplot(2,2,4);
+    % 5. Pole-Zero Plot
+    subplot(2,3,5);
     zplane(b, a);
-    title('Pole-Zero Plot'); grid on;
+    title('Pole-Zero Plot'); 
+    grid on;
 end
